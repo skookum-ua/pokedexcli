@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
+
+	"github.com/skookum-ua/pokedexcli/internal/pokecache"
 )
 
 type cliCommand struct {
@@ -21,8 +24,14 @@ var commands map[string]cliCommand
 
 var loc Locations
 
+const baseTime = 5 * time.Millisecond
+
+const baseLocation = "https://pokeapi.co/api/v2/location-area/"
+
+var cache = pokecache.NewCache(baseTime)
+
 func main() {
-	
+
 	config := Config{}
 	commands = map[string]cliCommand{
 		"exit": {
@@ -86,10 +95,21 @@ func commandHelp(config *Config) error {
 
 func commandMap(config *Config) error {
 
+
 	if config.Next == "" {
-		loc = getMap("https://pokeapi.co/api/v2/location-area/")
-	}else{
-		loc = getMap(config.Next)
+		body, ok := cache.Get(baseLocation)
+		if !ok {
+			body = getMap(baseLocation)
+		}
+		loc = unmarshal(body)
+		cache.Add(baseLocation, body)
+	} else {
+		body, ok := cache.Get(config.Next)
+		if !ok {
+			body = getMap(config.Next)
+		}
+		loc = unmarshal(body)
+		cache.Add(config.Next, body)
 	}
 	config.Next = loc.Next
 	config.Previous = loc.Previous
@@ -105,7 +125,12 @@ func commandMapB(config *Config) error {
 		fmt.Printf("You are on the first page\n")
 		return nil
 	} else {
-		loc = getMap(config.Previous)
+		body, ok := cache.Get(config.Previous)
+		if !ok {
+			body = getMap(config.Previous)
+		}
+		loc = unmarshal(body)
+		cache.Add(config.Previous, body)
 	}
 	config.Next = loc.Next
 	config.Previous = loc.Previous
@@ -115,7 +140,7 @@ func commandMapB(config *Config) error {
 	return nil
 }
 
-func getMap(link string) Locations {
+func getMap(link string) []byte {
 	res, err := http.Get(link)
 	if err != nil {
 		log.Fatal(err)
@@ -128,8 +153,13 @@ func getMap(link string) Locations {
 	if err != nil {
 		log.Fatal(err)
 	}
+	
+	return body
+}
+
+func unmarshal(body []byte) Locations{
 	loc := Locations{}
-	err = json.Unmarshal(body, &loc)
+	err := json.Unmarshal(body, &loc)
 	if err != nil {
 		fmt.Println(err)
 	}
