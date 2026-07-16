@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"math"
+	"math/rand"
 	"net/http"
 	"os"
 	"strings"
 	"time"
-
 	"github.com/skookum-ua/pokedexcli/internal/pokecache"
 )
 
@@ -22,18 +22,24 @@ type cliCommand struct {
 
 var commands map[string]cliCommand
 
+var caughtPoks map[string]Pokemon
+
 var loc Locations
 
 var poks Pokemonsters
+
+var pok Pokemon
 
 const baseTime = 50000 * time.Millisecond
 
 const baseLocation = "https://pokeapi.co/api/v2/location-area/"
 
+const k = 2.0
+
 var cache = pokecache.NewCache(baseTime)
 
 func main() {
-
+	caughtPoks = make(map[string]Pokemon)
 	config := Config{}
 	commands = map[string]cliCommand{
 		"exit": {
@@ -60,6 +66,21 @@ func main() {
 			name:        "explore",
 			description: "displaying pokemons in area",
 			callback:    explore,
+		},
+		"catch": {
+			name:        "catch",
+			description: "catching pokemon",
+			callback:    catch,
+		},
+		"inspect": {
+			name:        "inspect",
+			description: "displaying pokemons stats",
+			callback:    inspect,
+		},
+		"pokedex": {
+			name:        "pokedex",
+			description: "displaying caught pokemons",
+			callback:    pokedex,
 		},
 	}
 	scanner := bufio.NewScanner(os.Stdin)
@@ -106,18 +127,17 @@ func commandHelp(config *Config, userInput string) error {
 
 func commandMap(config *Config, userInput string) error {
 
-
 	if config.Next == "" {
 		body, ok := cache.Get(baseLocation)
 		if !ok {
-			body = getMap(baseLocation)
+			body,_ = getMap(baseLocation)
 		}
 		loc = unmarshalJSON[Locations](body)
 		cache.Add(baseLocation, body)
 	} else {
 		body, ok := cache.Get(config.Next)
 		if !ok {
-			body = getMap(config.Next)
+			body,_ = getMap(config.Next)
 		}
 		loc = unmarshalJSON[Locations](body)
 		cache.Add(config.Next, body)
@@ -138,7 +158,7 @@ func commandMapB(config *Config, userInput string) error {
 	} else {
 		body, ok := cache.Get(config.Previous)
 		if !ok {
-			body = getMap(config.Previous)
+			body,_ = getMap(config.Previous)
 		}
 		loc = unmarshalJSON[Locations](body)
 		cache.Add(config.Previous, body)
@@ -152,14 +172,14 @@ func commandMapB(config *Config, userInput string) error {
 }
 
 func explore(config *Config, userInput string) error {
-		link := fmt.Sprintf("https://pokeapi.co/api/v2/location-area/%s",userInput)
-		body, ok := cache.Get(link)
-		fmt.Printf("%s\n",link)
-		if !ok {
-			body = getMap(link)
-		}
-		poks = unmarshalJSON[Pokemonsters](body)
-		cache.Add(link, body)
+	link := fmt.Sprintf("https://pokeapi.co/api/v2/location-area/%s", userInput)
+	body, ok := cache.Get(link)
+
+	if !ok {
+		body,_ = getMap(link)
+	}
+	poks = unmarshalJSON[Pokemonsters](body)
+	cache.Add(link, body)
 
 	for _, val := range poks.Poks {
 		fmt.Printf("%s\n", val.Pokemon.Name)
@@ -167,21 +187,76 @@ func explore(config *Config, userInput string) error {
 	return nil
 }
 
-func getMap(link string) []byte {
+func catch(config *Config, userInput string) error {
+	link := fmt.Sprintf("https://pokeapi.co/api/v2/pokemon/%s", userInput)
+	body, ok := cache.Get(link)
+
+	if !ok {
+		body, _ = getMap(link)
+	}
+	pok = unmarshalJSON[Pokemon](body)
+	cache.Add(link, body)
+	fmt.Printf("Throwing a Pokeball at %s...\n", userInput)
+	base_exp := pok.BaseExperience
+	roll := rand.Intn(101)
+	difficulty := 1.0 + 99.0 * (math.Exp(k * (float64(base_exp) / 608.0)) - 1.0) / (math.Exp(k) - 1.0)
+	if roll <= int(difficulty) {
+		fmt.Printf("%s escaped!\n", userInput)
+	} else {
+		fmt.Printf("%s was caught!\n", userInput)
+		caughtPoks[pok.Forms[0].Name] = pok
+	}
+	return nil
+}
+
+func inspect(config *Config, userInput string) error {
+	if pok, ok := caughtPoks[userInput]; !ok {
+		fmt.Printf("you have not caught that pokemon\n")
+	}else{
+		fmt.Printf("Name: %s\n", userInput)
+		fmt.Printf("Height: %d\n", pok.Height)
+		fmt.Printf("Weight: %d\n", pok.Weight)
+		fmt.Printf("Stats:\n")
+		for _, s := range pok.Stats {
+    		fmt.Printf("  -%s: %d\n", s.Stat.Name, s.BaseStat)
+		}
+		fmt.Printf("Types: \n")
+		for _, t := range pok.Types {
+    		fmt.Printf(" - %s\n", t.Type.Name)
+		}
+
+	}
+	return nil
+}
+
+func pokedex(config *Config, userInput string) error{
+	if len(caughtPoks) > 0{
+	for key, _ := range caughtPoks {
+    		fmt.Printf("  -%s\n", key)
+		}
+	} else {
+		fmt.Printf("No pokemons caught yet\n")
+	}
+		return nil
+}
+
+func getMap(link string) ([]byte, error) {
 	res, err := http.Get(link)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 	body, err := io.ReadAll(res.Body)
 	res.Body.Close()
 	if res.StatusCode > 299 {
-		log.Fatalf("Response failed with status code: %d and\nbody: %s\n", res.StatusCode, body)
+		fmt.Printf("Likely wrong name entered")
+		return nil, err
 	}
 	if err != nil {
-		log.Fatal(err)
+		fmt.Printf("Something went wrong")
+		return nil, err
 	}
-	
-	return body
+
+	return body, nil
 }
 
 func unmarshalJSON[T any](body []byte) T {
@@ -211,4 +286,29 @@ type Pokemonsters struct {
 			Name string `json:"name"`
 		} `json:"pokemon"`
 	} `json:"pokemon_encounters"`
+}
+
+type Pokemon struct {
+	BaseExperience int `json:"base_experience"`
+
+	Forms []struct {
+		Name string `json:"name"`
+		URL  string `json:"url"`
+	} `json:"forms"`
+
+	Height int `json:"height"`
+	Weight int `json:"weight"`
+	Stats []struct {
+
+		BaseStat int `json:"base_stat"`
+		Stat     struct {
+			Name string `json:"name"`
+		} `json:"stat"`
+	} `json:"stats"`
+	
+	Types []struct {
+		Type struct {
+			Name string `json:"name"`
+		} `json:"type"`
+	} `json:"types"`
 }
